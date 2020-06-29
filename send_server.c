@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdlib.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
 #include <sys/ipc.h>
@@ -11,15 +12,16 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
-#define SERVER_PORT 8001
+#define SERVER_PORT 9873
 #define MAX_EVENTS 3000
 #define BACKLOG 10
-#define MAX_DATA 1000
-#define MAX_COUNT 1000
+#define MAX_COUNT 50000
 #define MAX_BUF_SIZE 1024
 #define MAX_FD_SIZE 1024
-#define HEAD_MAX 1024
+#define HEAD_MAX 1000
 #define TALE 512
+
+#define rdtsc_64(lower, upper) asm __volatile ("rdtsc" : "=a"(lower), "=d" (upper));
 
 static int listener;
 static int epfd;
@@ -63,7 +65,6 @@ static int setup_socket()
 
 char *setup_shmem(char file_name[], int id)
 {
-  char buf[MAX_BUF_SIZE];
   char * shared_memory;
   int seg_id, flag;
   key_t key;
@@ -114,6 +115,13 @@ int main()
   int count[MAX_FD_SIZE];
   int head = 1, tale = 1;
   char *shared_memory;
+  struct timespec req;
+  struct timespec *rem;
+  unsigned int tsc_l, tsc_u; //uint32_t
+  unsigned long int tsc; //uint64_t
+
+  req.tv_sec = 0;
+  req.tv_nsec = 100 * 1000;
 
   if ((epfd = epoll_create(MAX_EVENTS)) < 0) {
     die("epoll_create");
@@ -153,24 +161,28 @@ int main()
 		epoll_ctl(epfd, EPOLL_CTL_ADD, client, &ev);
       } else {
 		while(head == tale) {
-		  head = atoi(shared_memory);
-		  tale = atoi((shared_memory + TALE));
-		  printf("%d", head);
-		  sleep(1);
+		  memcpy(&head, shared_memory, sizeof(head));
+		  memcpy(&tale, shared_memory + TALE, sizeof(tale));
+		  //nanosleep(&req, rem);
 		}
 		int client = events[i].data.fd;
-		sprintf(buffer, "%s", (shared_memory + head * MAX_BUF_SIZE));
 
+		memcpy(buffer, (shared_memory + head * MAX_BUF_SIZE), MAX_BUF_SIZE);
 		if(head == HEAD_MAX) {
 		  head = 1;
 		} else {
 		  head++;
 		}
-		printf("head:%d tale:%d sh_head:%d\n", head, tale, atoi(shared_memory));
 
-		sprintf(shared_memory, "%d", head);
+		memcpy(shared_memory, &head, sizeof(head));
 
+		unsigned long int log_tsc;
+		rdtsc_64(tsc_l, tsc_u);
+		log_tsc = (unsigned long int)tsc_u<<32 | tsc_l;
+		memcpy(buffer + 2 * sizeof(log_tsc), &log_tsc, sizeof(log_tsc));
 		int n = writen(client, buffer, sizeof buffer);
+		//nanosleep(&req, rem);
+
 		if (n <= 0) {
 		  if (n < 0) perror("write");
 		  epoll_ctl(epfd, EPOLL_CTL_DEL, client, &ev);
@@ -185,5 +197,6 @@ int main()
       }
     }
   }
+  printf("oti\n");
   return 0;
 }

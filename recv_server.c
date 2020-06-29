@@ -14,17 +14,20 @@
 #include <netinet/in.h>
 #include <unistd.h>
 
-#define SERVER_PORT 8000
+
+#define SERVER_PORT 9872
 #define MAX_EVENTS 3000
 #define BACKLOG 10
-#define MAX_COUNT 10000
 #define MEM_SIZE 1024 * 1024
 #define BUF_SIZE 1024
-#define TALE_MAX 1024
+#define TALE_MAX 1000
 #define TALE 512
+
+#define rdtsc_64(lower, upper) asm __volatile ("rdtsc" : "=a"(lower), "=d" (upper));
 
 static int listener;
 static int epfd;
+//int packet_log[MAX_COUNT][256];
 char *tear;
 
 static void die(const char* msg)
@@ -121,9 +124,20 @@ ssize_t readn(int fd, void *buf, size_t count)
 
 void teardown()
 {
-
+  /*
+  for (int k = 0; k < MAX_COUNT; k++) {
+	for(int j = 0; j < 256; j++){
+	  if (packet_log[k][j] != k) {
+		printf("round: %d, ofset: %d, value: %d\n", k, j, packet_log[k][j]);
+	  }
+	}
+  }
+  printf("%d\n", errno);
+  */
+  /*
+  printf("aa");
   shmdt(tear);
-
+  */
   exit(0);
 }
 
@@ -134,8 +148,11 @@ int main()
   struct epoll_event events[MAX_EVENTS];
   char buffer[BUF_SIZE];
   int count = 0;
-  int head= 1, tale = 2;
+  int head= 1, tale = 1;
   char *shared_memory;
+  unsigned int tsc_l, tsc_u; //uint32_t
+  unsigned long int tsc; //uint64_t
+
   signal(SIGINT, teardown);
   if ((epfd = epoll_create(MAX_EVENTS)) < 0) {
     die("epoll_create");
@@ -147,8 +164,8 @@ int main()
   if(shared_memory == NULL) {
 	return -1;
   }
-  sprintf(shared_memory, "%d", head);
-  sprintf((shared_memory + TALE), "%d", tale);
+  memcpy(shared_memory, &head, sizeof(head));
+  memcpy((shared_memory + TALE), &tale, sizeof(tale));
   memset(&ev, 0, sizeof ev);
   ev.events = EPOLLIN;
   ev.data.fd = listener;
@@ -176,29 +193,37 @@ int main()
       } else {
 		int client = events[i].data.fd;
 		count++;
-		while(head == tale) {
-		  head = atoi(shared_memory);
-		  tale = atoi((shared_memory + TALE));
-		  printf("%d", tale);
-		  sleep(1);
+		while((head - 1) == tale || ((head == 1) && (tale == TALE_MAX))) {
+		  memcpy(&head, shared_memory, sizeof(head));
+		  memcpy(&tale, shared_memory + TALE, sizeof(tale));
 		}
+		unsigned long int log_tsc;
 		int n = readn(client, buffer, sizeof buffer);
+		rdtsc_64(tsc_l, tsc_u);
+		log_tsc = (unsigned long int)tsc_u<<32 | tsc_l;
+		memcpy(buffer + sizeof(log_tsc), &log_tsc, sizeof(log_tsc));
+		/*		for (int h = 0; h < 256; h++) {
+		  packet_log[count][h] = buffer3[count][h];
+		  }*/
 		if (n <= 0) {
 		  if (n < 0) perror("read");
 		  epoll_ctl(epfd, EPOLL_CTL_DEL, client, &ev);
 		  close(client);
+		  /*		  for(int k=0; k<count; k++){
+			for(int j=0; j<256; j++){
+			  printf("%d,", buffer3[k][j]);
+			}
+			printf("\n");
+		  }
+		  */
 		} else {
-		  sprintf((shared_memory + tale * 1024), buffer);
+		  memcpy((shared_memory + tale * BUF_SIZE), buffer, BUF_SIZE);
 		  if(tale == TALE_MAX) {
 			tale = 1;
 		  } else {
 			tale++;
 		  }
-		  printf("tale:%d head:%d\n", tale, atoi(shared_memory));
-		  sprintf((shared_memory + TALE), "%d", tale);
-		  if (count > MAX_COUNT) {
-			exit(0);
-		  }
+		  memcpy((shared_memory + TALE), &tale, sizeof(tale));
 		}
       }
     }
